@@ -1,0 +1,255 @@
+<?php
+
+define('DOMAIN_ONE', 'gfs_com');
+define('DOMAIN_TWO', 'gfs_ca');
+
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Component\Utility\UserAgent;
+
+/**
+ * Retrieves default language for currently active domain
+ *
+ * @return object
+ *   Provides output similar to language_default() in bootstrap process.
+ */
+function domain_locale_custom_language_default() {
+  $host = \Drupal::request()->getHost();
+  $domain = \Drupal::service('domain.loader')->loadByHostName($host);
+  if(empty($domain)) {
+    return \Drupal::languageManager()->getLanguage('en-us');
+  }
+
+  switch($domain->id()) {
+    case DOMAIN_ONE:
+      return \Drupal::languageManager()->getLanguage('en-us');
+    case DOMAIN_TWO:
+      return \Drupal::languageManager()->getLanguage('en-ca');
+  }
+
+}
+
+/**
+ * Retrieves a list of languages enabled on given domain
+ *
+ * @param int $domain_id
+ *
+ * @return
+ *   An array of langcodes.
+ */
+function domain_locale_custom_lookup($domain_id) {
+  $languages = domain_locale_custom_get_domains_languages();
+  $domain_locale = isset($languages[$domain_id]) ? $languages[$domain_id] : [];
+  return $domain_locale;
+}
+
+/**
+ * Determine if the language is allowed on the current domain.
+ *
+ * @param string $language_id
+ *
+ * @return
+ *   TRUE | FALSE
+ */
+function domain_locale_custom_language_is_allowed($language_id) {
+  $host = \Drupal::request()->getHost();
+  $domain = \Drupal::service('domain.loader')->loadByHostName($host);
+  if($domain == NULL) {
+    return TRUE;
+  }
+  $languages_allowed = domain_locale_custom_lookup($domain->id());
+
+  foreach($languages_allowed as $language_to_check) {
+    if($language_to_check->getId() == $language_id) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Helper function to retrieve enabled languages for each domain
+ *
+ * @return
+ *   Array language list indexed by domain_id
+ */
+function domain_locale_custom_get_domains_languages() {
+  return [
+    DOMAIN_ONE => [
+      \Drupal::languageManager()->getLanguage('en-us')
+    ],
+    DOMAIN_TWO => [
+      \Drupal::languageManager()->getLanguage('en-ca'),
+      \Drupal::languageManager()->getLanguage('fr-ca')
+    ]
+  ];
+}
+
+/**
+ * Helper function to retrieve a domain, given a langcode.
+ *
+ * @return
+ *   Domain object
+ */
+function domain_locale_custom_get_domain_by_langcode($langcode) {
+  switch($langcode) {
+    case 'en-us':
+      return \Drupal::service('domain.loader')->load(DOMAIN_ONE);
+    case 'en-ca':
+    case 'fr-ca':
+      return \Drupal::service('domain.loader')->load(DOMAIN_TWO);
+  }
+  return NULL;
+}
+
+/**
+ * Helper function to determine if the current language mismatches the domain.
+ * For example, en-us should not be able to display the Canadian site.
+ *
+ * @return
+ *   Bool mismatch or not
+ */
+function domain_locale_custom_language_mismatches_domain($domain, $current_language) {
+  $requested_path = \Drupal::request()->getRequestUri();
+  $path = explode('/', $requested_path);
+  $requested_language = $path[0];
+  if($domain->id() == 'gfs_ca' && ($current_language->getId() == 'en-us' || $requested_language == 'en-us')) {
+    return TRUE;
+  }
+  if($domain->id() == 'gfs_com' && ($current_language->getId() != 'en-us' || $requested_language != 'en-us')) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/**
+ * Implements hook_form_BASE_FORM_ID_alter() for \Drupal\node\NodeForm.
+ */
+function domain_locale_custom_form_node_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  $manager = \Drupal::service('domain_locale_custom.element_manager');
+  $form = $manager->setFormOptions($form, $form_state, DOMAIN_ACCESS_FIELD);
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Changes the langcode selector to be domain-aware with the languages
+ * it allows.
+ */
+function domain_locale_custom_form_alter(&$form, FormStateInterface $form_state) {
+  if($form['form_id']['#value'] == 'lang_dropdown_form') {
+    return;
+  }
+  if(!isset($form['langcode'])) {
+    return;
+  }
+
+  try {
+    if(method_exists($form_state->getFormObject(), 'getEntity')) {
+      $node = $form_state->getFormObject()->getEntity();
+    } else {
+      $node = NULL;
+    }
+  } catch (\Exception $e) {
+    $node = NULL;
+  }
+  
+  // Instead of just providing a FieldWidget plugin for langcode,
+  // we will override core's by removing it from the after_build of the
+  // langcode form widget.
+  $admin_context = \Drupal::service('router.admin_context');
+
+  if(isset($form['langcode']['widget']) && (!$admin_context->isAdminRoute() || ($node != NULL && $node->isNew()))) {
+    foreach($form['langcode']['widget']['#after_build'] as $key => $value) {
+      if($value == 'Drupal\Core\Field\Plugin\Field\FieldWidget\LanguageSelectWidget') {
+        unset($form['langcode']['widget']['#after_build'][$key]);
+      }
+      $form['langcode']['widget']['#after_build'][] = ['Drupal\domain_locale_custom\Plugin\Field\FieldWidget\GfsLanguageSelectWidget', 'afterBuild'];
+    }
+  }
+
+}
+
+/**
+ * Get the user's active domain from the GFS_SITE variable.
+ *
+ * @return Domain
+ *   The active domain object.
+ */
+function domain_locale_custom_get_active_domain() {
+  switch(GFS_SITE) {
+    case 'us':
+      $current_domain = \Drupal::service('domain.loader')->load(DOMAIN_ONE);
+      break;
+    case 'ca':
+      $current_domain = \Drupal::service('domain.loader')->load(DOMAIN_TWO);
+      break;
+  }
+  return $current_domain;
+}
+
+/**
+ * Get the user's active domain based on the GFS_SITE variable and their
+ * current browser langcode..
+ *
+ * @return Domain
+ *   The domain object.
+ */
+function domain_locale_custom_get_active_browser_domain() {
+  $http_accept_language = \Drupal::request()->server->get('HTTP_ACCEPT_LANGUAGE');
+  $langcodes = array_keys(\Drupal::languageManager()->getLanguages());
+  $mappings = \Drupal::config('language.mappings')->get('map');
+
+  $browser_langcode = UserAgent::getBestMatchingLangcode($http_accept_language, $langcodes, $mappings);
+
+  switch(GFS_SITE) {
+    case 'us':
+      if($browser_langcode != 'en-us') {
+        $current_domain = \Drupal::service('domain.loader')->load(DOMAIN_TWO);
+      } else {
+        $current_domain = \Drupal::service('domain.loader')->load(DOMAIN_ONE);
+      }
+      break;
+    case 'ca':
+      if($browser_langcode == 'en-us') {
+        $current_domain = \Drupal::service('domain.loader')->load(DOMAIN_ONE);
+      } else {
+        $current_domain = \Drupal::service('domain.loader')->load(DOMAIN_TWO);
+      }
+      break;
+  }
+  return $current_domain;
+}
+
+/**
+ * Given a domain object, return its default langcode.
+ *
+ * @return string
+ *   The default langcode for the browser.
+ */
+function domain_locale_custom_get_default_domain_langcode($domain) {
+  switch($domain->id()) {
+    case 'gfs_com':
+      return 'en-us';
+    case 'gfs_ca':
+      return 'en-ca';
+  }
+}
+
+/**
+ * Implements hook_domain_source_path_alter().
+ *
+ * Make sure we're on the correct domain based on the requested
+ * path language.
+ */
+function domain_locale_custom_domain_source_path_alter(&$source, $path, $options) {
+  $data = \Drupal::getContainer()->get('domain_locale_custom.master_request_data');
+  
+  if ($data->requestedLangcode() == 'en-ca' || $data->requestedLangcode() == 'fr-ca') {
+    $options['active_domain'] = \Drupal::service('entity_type.manager')->getStorage('domain')->load('gfs_ca');
+  }
+  if ($data->requestedLangcode() == 'en-us') {
+    $options['active_domain'] = \Drupal::service('entity_type.manager')->getStorage('domain')->load('gfs_com');
+  }
+
+  $source = $options['active_domain'];
+}

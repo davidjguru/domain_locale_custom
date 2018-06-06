@@ -1,0 +1,7 @@
+domain_locale_custom.negotiation_url:
+  path: '/admin/config/regional/language/detection/url-domain-locale-custom'
+  defaults:
+    _form: 'Drupal\domain_locale_custom\Form\NegotiationUrlCustomForm'
+    _title: 'Custom Domain Locale URL language detection configuration'
+  requirements:
+    _permission: 'administer languages'

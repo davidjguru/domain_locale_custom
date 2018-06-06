@@ -1,0 +1,16 @@
+services:
+  domain_locale_custom.element_manager:
+    class: Drupal\domain_locale_custom\DomainLocaleElementManager
+    tags:
+      - { name: persist }
+    arguments: ['@entity_type.manager']
+  domain_locale_custom.entity_finder:
+    class: Drupal\domain_locale_custom\DomainLocaleEntityFinder
+  domain_locale_custom.master_request_data:
+    class: Drupal\domain_locale_custom\MasterRequestData
+    arguments: ['@config.factory', '@request_stack', '@current_route_match', '@router.admin_context', '@language_manager', '@logger.factory', '@page_cache_kill_switch']
+  domain_locale_custom.front_page_path_processor:
+    class: Drupal\domain_locale_custom\HttpKernel\DomainLocaleFrontPagePathProcessor
+    arguments: ['@page_cache_kill_switch', '@domain_locale_custom.master_request_data']
+    tags:
+      - { name: path_processor_outbound, priority: 94 }
